@@ -11,19 +11,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from spark.jdbc_io import (  # noqa: E402
+from spark.jdbc_io import ( 
     create_spark_session,
     overwrite_staging_table,
     read_sql_table,
 )
-from spark.shared_feature_logic import (  # noqa: E402
+from spark.shared_feature_logic import (  
     SILVER_FEATURE_COLUMNS,
     add_time_features,
     assert_all_locations_mapped,
     clean_bronze_weather,
     enrich_with_location,
 )
-from warehouse.db_connection import get_engine  # noqa: E402
+from warehouse.db_connection import get_engine  
 
 
 logger = logging.getLogger("historical_bootstrap_job")

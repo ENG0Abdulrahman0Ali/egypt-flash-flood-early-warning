@@ -77,22 +77,6 @@ SILVER_FEATURE_COLUMNS = [
 
 
 def clean_bronze_weather(df: DataFrame) -> DataFrame:
-    """Return validated, deduplicated weather rows ready for enrichment.
-
-    Rules in this first version:
-    - Parse Open-Meteo's ``yyyy-MM-ddTHH:mm`` event time into a timestamp.
-    - Keep only rows with a city, source, non-negative rain, and humidity in
-      the inclusive range 0..100. Missing rain/humidity cannot be loaded into
-      the Silver schema, so those rows are dropped.
-    - Fill the other weather measurements with zero, following the Spark task
-      notes.
-    - For a repeated city/hour, keep the most recently ingested Bronze row;
-      ``id`` breaks ties within the source Bronze table.
-
-    Spark transformations are lazy: this function describes the work but does
-    not read or calculate all rows until a later action such as ``show`` or
-    ``write`` is called.
-    """
     missing_columns = BRONZE_REQUIRED_COLUMNS.difference(df.columns)
     if missing_columns:
         missing_list = ", ".join(sorted(missing_columns))
@@ -146,13 +130,6 @@ def clean_bronze_weather(df: DataFrame) -> DataFrame:
 
 
 def enrich_with_location(weather_df: DataFrame, location_df: DataFrame) -> DataFrame:
-    """Add elevation and slope from the small ``gold.dim_location`` table.
-
-    The SQL schema makes ``city`` the primary key, so each weather row should
-    match at most one location. A left join keeps every weather row visible;
-    callers must run ``assert_all_locations_mapped`` before writing Silver so
-    an unknown city cannot silently disappear or be stored without terrain.
-    """
     missing_columns = LOCATION_REQUIRED_COLUMNS.difference(location_df.columns)
     if missing_columns:
         missing_list = ", ".join(sorted(missing_columns))
@@ -171,11 +148,6 @@ def enrich_with_location(weather_df: DataFrame, location_df: DataFrame) -> DataF
 
 
 def assert_all_locations_mapped(enriched_df: DataFrame) -> None:
-    """Fail before a Silver write if any weather city lacks terrain data.
-
-    ``collect`` is bounded to five city names; the large weather rows remain
-    distributed in Spark and are not copied to the Python process.
-    """
     unmapped = (
         enriched_df.filter(F.col("elevation").isNull() | F.col("slope_degree").isNull())
         .select("city")
@@ -192,19 +164,6 @@ def assert_all_locations_mapped(enriched_df: DataFrame) -> None:
 
 
 def add_time_features(enriched_df: DataFrame) -> DataFrame:
-    """Calculate Silver rolling sums, exact-time rain lags, and calendar fields.
-
-    The rolling sums contain the current hourly reading plus previous hourly
-    readings: 3 rows span 2 hours between timestamps, 6 span 5 hours, and so
-    on. The range windows use elapsed seconds, so a missing hour does not make
-    an older reading slide into the time window. Missing observations remain
-    missing data; this function does not invent a zero-rain reading for them.
-
-    Exact lag columns use timestamp-keyed self-joins. ``lag`` by row number
-    would incorrectly treat the previous available reading as exactly one or
-    24 hours earlier when timestamps are missing. The Spark session timezone
-    should be UTC before parsing timestamps and deriving ``hour_of_day``.
-    """
     missing_columns = TIME_FEATURE_REQUIRED_COLUMNS.difference(enriched_df.columns)
     if missing_columns:
         missing_list = ", ".join(sorted(missing_columns))
