@@ -1,19 +1,3 @@
-"""
-dag_historical_bootstrap.py
-Owner: Mohamed Tarek
-
-ONE-TIME DAG (schedule="@once"): يشتغل مرة واحدة بس أول ما Airflow يشوفه،
-ويجهّز المشروع من الصفر:
-
-  1) setup_db                 -> ينشئ FloodProjectDB + جداول Bronze/Silver/Gold
-  2) fetch_static_data        -> gold.dim_location
-  3) fetch_historical         -> bronze.historical_weather
-  4) historical_bootstrap_job -> Spark: Bronze (historical) -> Silver (Full Load)
-
-لو عايز تشغله يدوي بدل التلقائي غيّر schedule إلى None، أو من الـ UI:
-    airflow dags trigger historical_bootstrap
-"""
-
 import os
 from datetime import datetime, timedelta
 

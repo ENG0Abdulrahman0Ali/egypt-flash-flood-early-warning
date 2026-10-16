@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from spark.jdbc_io import (  # noqa: E402
+from spark.jdbc_io import ( 
     create_spark_session,
     read_sql_table,
     write_sql_table,
@@ -38,7 +38,6 @@ RISK_INPUT_COLUMNS = [
     "slope_degree",
 ]
 
-# Initial reference values. Validate these against local flood observations.
 NORMALIZATION_REFERENCES = {
     "rain_1h": 15.0,
     "rain_3h": 30.0,
@@ -118,7 +117,6 @@ def _read_silver_features(spark: object) -> DataFrame:
         F.to_timestamp("event_time"),
     )
 
-    # Do not silently choose an arbitrary row when duplicate keys exist.
     duplicate_exists = (
         weather.groupBy("city", "event_time")
         .count()

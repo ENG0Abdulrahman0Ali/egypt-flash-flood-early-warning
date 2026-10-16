@@ -17,19 +17,6 @@ _TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9
 
 
 def create_spark_session(app_name: str) -> SparkSession:
-    """Create a local Spark session with UTC timestamps and the SQL Server driver.
-
-    The project runs Spark inside the Airflow container, so ``local[*]`` uses
-    that container's available CPU cores. The JDBC package is resolved from
-    Maven Central when the Spark application starts.
-
-    Optional environment variables:
-    - SPARK_MASTER              (default ``local[*]``)
-    - SPARK_IVY_DIR             persistent cache dir for the downloaded JDBC jar
-                                (e.g. /opt/airflow/.ivy2 so it survives container recreation)
-    - SPARK_SHUFFLE_PARTITIONS  (default 16; Spark's default of 200 is slow for local data)
-    """
-    # Make any Python workers use the same interpreter (the uv venv) as this script.
     os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
     builder = (

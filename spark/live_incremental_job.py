@@ -11,13 +11,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from spark.jdbc_io import (  # noqa: E402
+from spark.jdbc_io import (  
     create_spark_session,
     read_sql_query,
     read_sql_table,
     write_sql_table,
 )
-from spark.shared_feature_logic import (  # noqa: E402
+from spark.shared_feature_logic import ( 
     SILVER_BASE_COLUMNS,
     SILVER_FEATURE_COLUMNS,
     add_time_features,
@@ -29,7 +29,6 @@ from spark.shared_feature_logic import (  # noqa: E402
 
 logger = logging.getLogger("live_incremental_job")
 
-# rain_sum_72h يحتاج 72 قراءة (الساعة الحالية + 71 قبلها)، و rain_lag_24h يحتاج -24h.
 CONTEXT_HOURS = 71
 SILVER_FEATURE_COLUMNS_FOR_CONTEXT = [*SILVER_BASE_COLUMNS, "elevation", "slope_degree"]
 
@@ -59,19 +58,10 @@ def _read_new_live_rows(spark):
 
 
 def _read_silver_context(spark, earliest_new_event_time):
-    """Read earlier Silver rows needed as window context for the new rows.
-
-    Window functions only see the rows inside the DataFrame they run on. If we
-    called ``add_time_features`` on the new rows alone, rain_sum_*h would collapse
-    to the current hour and rain_lag_* would be NULL. So we also load the
-    previous ``CONTEXT_HOURS`` hours from Silver, run the shared logic over
-    context + new rows, and keep only the new rows afterwards.
-    """
     cutoff = earliest_new_event_time - timedelta(hours=CONTEXT_HOURS)
     cutoff_text = cutoff.strftime("%Y-%m-%d %H:%M:%S")
     columns = ", ".join(SILVER_FEATURE_COLUMNS_FOR_CONTEXT)
 
-    # الفلتر يتنفذ جوه SQL Server بدل ما نسحب كل Silver.
     context = read_sql_query(
         spark,
         f"SELECT {columns} FROM silver.fact_weather_features "
@@ -125,7 +115,6 @@ def run() -> None:
         enriched_weather = enrich_with_location(clean_weather, locations)
         assert_all_locations_mapped(enriched_weather)
 
-        # Cache: الصفوف الجديدة بتتستخدم مرتين (earliest time + union).
         enriched_weather = enriched_weather.cache()
         earliest = enriched_weather.agg(F.min("event_time")).first()[0]
 
