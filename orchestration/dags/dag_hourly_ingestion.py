@@ -2,26 +2,26 @@
 dag_hourly_ingestion.py
 Owner: Mohamed Tarek
 
-Runs every hour. Covers ONLY the Ingestion + Warehouse(Bronze) part of
-the pipeline for now:
+يشتغل كل ساعة، بالترتيب:
 
-  0) create_topic.py             -> makes sure the Kafka topic exists
-  1) producer_live.py            -> publishes the current hour's reading
-                                     for every at-risk city to Kafka
-  2) kafka_to_bronze_consumer.py -> reads those messages and writes them,
-                                     unmodified, into bronze.live_weather
+  1) ensure_topic              -> يتأكد إن Kafka topic موجود
+  2) producer_live             -> ينشر قراءة الساعة الحالية لكل مدينة على Kafka
+  3) kafka_to_bronze_consumer  -> يكتبها في bronze.live_weather
+  4) live_incremental_job      -> Spark: Bronze (live) -> Silver (Append)
+  5) silver_to_gold_load       -> Spark: Silver -> gold.fact_hourly_risk
 
-NOTE: this DAG stops at Bronze on purpose. Once Youssef's Spark jobs
-(Silver/Gold) and Abdelrahman's ML inference are ready, extend this DAG
-(or chain a new one after it) rather than duplicating the schedule.
+الاسم `hourly_ingestion` والـ task_ids الثلاثة الأولى زي ما كانوا.
+لازم historical_bootstrap يكون خلص الأول (silver_to_gold محتاج صفوف historical
+عشان يحسب الـ thresholds).
 """
 
 import os
 from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.bash import BashOperator
+
+from airflow.decorators import dag, task
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", "/opt/airflow/project")
+PYTHON = "/opt/uv-venv/env/bin/python"
 
 default_args = {
     "owner": "mohamed_tarek",
@@ -29,30 +29,47 @@ default_args = {
     "retry_delay": timedelta(minutes=3),
 }
 
-with DAG(
+
+@dag(
     dag_id="hourly_ingestion",
-    description="Hourly: publish live weather to Kafka, then write it into bronze.live_weather",
+    description="Hourly: Kafka -> Bronze -> Silver (Spark) -> Gold risk (Spark)",
     schedule="@hourly",
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    is_paused_upon_creation=False,  
+    max_active_runs=1,  # ما نسمحش بتداخل تشغيلين Spark على نفس الجداول
+    is_paused_upon_creation=False,
     default_args=default_args,
-    tags=["flood-warning", "ingestion", "hourly"],
-) as dag:
+    tags=["flood-warning", "ingestion", "spark", "hourly"],
+)
+def hourly_ingestion():
 
-    ensure_topic = BashOperator(
-        task_id="ensure_topic",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python ingestion/create_topic.py",
+    @task.bash
+    def ensure_topic() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/create_topic.py"
+
+    @task.bash
+    def producer_live() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/producer_live.py"
+
+    @task.bash
+    def kafka_to_bronze_consumer() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/kafka_to_bronze_consumer.py"
+
+    @task.bash(execution_timeout=timedelta(minutes=40))
+    def live_incremental_job() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} spark/live_incremental_job.py"
+
+    @task.bash(execution_timeout=timedelta(minutes=40))
+    def silver_to_gold_load() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} spark/silver_to_gold_load.py"
+
+    (
+        ensure_topic()
+        >> producer_live()
+        >> kafka_to_bronze_consumer()
+        >> live_incremental_job()
+        >> silver_to_gold_load()
     )
 
-    produce_live_reading = BashOperator(
-        task_id="producer_live",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python ingestion/producer_live.py",
-    )
 
-    write_to_bronze = BashOperator(
-        task_id="kafka_to_bronze_consumer",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python ingestion/kafka_to_bronze_consumer.py",
-    )
-
-    ensure_topic >> produce_live_reading >> write_to_bronze
+hourly_ingestion()

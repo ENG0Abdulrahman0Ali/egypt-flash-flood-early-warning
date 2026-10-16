@@ -1,26 +1,26 @@
 """
 dag_historical_bootstrap.py
-Owner: Mohamed Tarek (orchestrates his own ingestion scripts + Menna's setup_db.py)
+Owner: Mohamed Tarek
 
-ONE-TIME DAG — not scheduled (schedule=None). Trigger it manually once,
-right after Airflow itself is up, to set up the whole project from zero:
+ONE-TIME DAG (schedule="@once"): يشتغل مرة واحدة بس أول ما Airflow يشوفه،
+ويجهّز المشروع من الصفر:
 
-  1) setup_db.py            -> creates FloodProjectDB + Bronze/Silver/Gold tables
-                                (safe to re-run — every .sql file is idempotent)
-  2) fetch_static_data.py   -> gold.dim_location
-  3) fetch_historical.py    -> bronze.historical_weather
+  1) setup_db                 -> ينشئ FloodProjectDB + جداول Bronze/Silver/Gold
+  2) fetch_static_data        -> gold.dim_location
+  3) fetch_historical         -> bronze.historical_weather
+  4) historical_bootstrap_job -> Spark: Bronze (historical) -> Silver (Full Load)
 
-Trigger manually from the Airflow UI (http://localhost:8080), or:
+لو عايز تشغله يدوي بدل التلقائي غيّر schedule إلى None، أو من الـ UI:
     airflow dags trigger historical_bootstrap
 """
 
 import os
 from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.bash import BashOperator
 
+from airflow.decorators import dag, task
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", "/opt/airflow/project")
+PYTHON = "/opt/uv-venv/env/bin/python"
 
 default_args = {
     "owner": "mohamed_tarek",
@@ -28,33 +28,45 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-with DAG(
+
+@dag(
     dag_id="historical_bootstrap",
-    description="One-time: create DB/tables, then populate gold.dim_location and bronze.historical_weather",
-    schedule=None,         
+    description="One-time: DB/tables -> dim_location -> bronze historical -> silver (Spark)",
+    schedule="@once",
     start_date=datetime(2026, 1, 1),
     catchup=False,
+    max_active_runs=1,
+    is_paused_upon_creation=False,
     default_args=default_args,
-    tags=["flood-warning", "warehouse", "ingestion", "one-time"],
-) as dag:
+    tags=["flood-warning", "warehouse", "ingestion", "spark", "one-time"],
+)
+def historical_bootstrap():
 
-    setup_database = BashOperator(
-        task_id="setup_db",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python warehouse/setup_db.py",
-    )
+    @task.bash
+    def setup_db() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} warehouse/setup_db.py"
 
-    fetch_static_data = BashOperator(
-        task_id="fetch_static_data",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python ingestion/fetch_static_data.py",
-    )
+    @task.bash
+    def fetch_static_data() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/fetch_static_data.py"
 
-    fetch_historical = BashOperator(
-        task_id="fetch_historical",
-        bash_command=f"cd {PROJECT_DIR} && /opt/uv-venv/bin/python ingestion/fetch_historical.py",
+    @task.bash(
         execution_timeout=timedelta(hours=3),
         retries=2,
         retry_delay=timedelta(minutes=10),
     )
+    def fetch_historical() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/fetch_historical.py"
+
+    @task.bash(
+        execution_timeout=timedelta(hours=2),
+        retries=1,
+        retry_delay=timedelta(minutes=5),
+    )
+    def historical_bootstrap_job() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} spark/historical_bootstrap_job.py"
+
+    setup_db() >> fetch_static_data() >> fetch_historical() >> historical_bootstrap_job()
 
 
-    setup_database >> fetch_static_data >> fetch_historical
+historical_bootstrap()
