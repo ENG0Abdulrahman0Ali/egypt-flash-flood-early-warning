@@ -4,45 +4,104 @@ Owner: Mohamed Tarek
 
 ONE-TIME script. Fetches hourly historical weather for every at-risk area
 from Open-Meteo and writes raw rows into bronze.historical_weather.
+
+Range: the last HISTORY_YEARS (5) years up to the CURRENT UTC hour, computed
+when the script runs. The Archive API (ERA5) lags real time by a few days, so:
+  - Archive API  : start -> (today - ARCHIVE_LAG_DAYS)
+  - Forecast API : the remaining recent days via past_days, cut at the current hour
 """
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import time
+from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
 from sqlalchemy import text
-from config import AT_RISK_LOCATIONS, OPEN_METEO_HISTORICAL_URL, HOURLY_VARIABLES
+from config import (
+    AT_RISK_LOCATIONS,
+    OPEN_METEO_FORECAST_URL,
+    OPEN_METEO_HISTORICAL_URL,
+    HOURLY_VARIABLES,
+)
 from warehouse.db_connection import get_engine
 from logger import get_logger
 
 logger = get_logger("fetch_historical")
 
-START_DATE = "2019-01-01"
-END_DATE = "2024-12-31"
+HISTORY_YEARS = 5
+ARCHIVE_LAG_DAYS = 7   # Archive API data for the last few days may be incomplete/NULL
 
 
-def fetch_historical_for_city(city: str, lat: float, lon: float) -> pd.DataFrame:
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": START_DATE,
-        "end_date": END_DATE,
-        "hourly": ",".join(HOURLY_VARIABLES),
-    }
+def get_date_range(now: datetime | None = None) -> tuple[str, str, datetime]:
+    """Return (archive_start, archive_end, current_hour), all UTC."""
+    now = now or datetime.now(timezone.utc)
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    today = current_hour.date()
+    try:
+        start = today.replace(year=today.year - HISTORY_YEARS)
+    except ValueError:  # 29 Feb
+        start = today.replace(year=today.year - HISTORY_YEARS, day=28)
+    archive_end = today - timedelta(days=ARCHIVE_LAG_DAYS)
+    return start.isoformat(), archive_end.isoformat(), current_hour
+
+
+def _get_json(url: str, params: dict, label: str) -> dict:
     for attempt in range(1, 6):
         try:
-            response = requests.get(OPEN_METEO_HISTORICAL_URL, params=params, timeout=120)
+            response = requests.get(url, params=params, timeout=120)
             response.raise_for_status()
-            break
+            return response.json()
         except requests.RequestException:
-            logger.warning(f"{city}: attempt {attempt}/5 failed", exc_info=True)
+            logger.warning(f"{label}: attempt {attempt}/5 failed", exc_info=True)
             if attempt == 5:
                 raise
             time.sleep(20 * attempt)
 
-    city_df = pd.DataFrame(response.json()["hourly"]).rename(columns={"time": "event_time"})
+
+def fetch_historical_for_city(city: str, lat: float, lon: float) -> pd.DataFrame:
+    start_date, archive_end, current_hour = get_date_range()
+    hourly_vars = ",".join(HOURLY_VARIABLES)
+
+    # 1) Long history from the Archive API
+    archive = _get_json(
+        OPEN_METEO_HISTORICAL_URL,
+        {
+            "latitude": lat, "longitude": lon,
+            "start_date": start_date, "end_date": archive_end,
+            "hourly": hourly_vars, "timezone": "GMT",
+        },
+        f"{city} archive",
+    )
+    archive_df = pd.DataFrame(archive["hourly"]).rename(columns={"time": "event_time"})
+
+    # 2) Recent days (archive_end -> now) from the Forecast API
+    recent = _get_json(
+        OPEN_METEO_FORECAST_URL,
+        {
+            "latitude": lat, "longitude": lon,
+            "hourly": hourly_vars, "timezone": "GMT",
+            "past_days": ARCHIVE_LAG_DAYS + 1, "forecast_days": 1,
+        },
+        f"{city} recent",
+    )
+    recent_df = pd.DataFrame(recent["hourly"]).rename(columns={"time": "event_time"})
+
+    # Keep only hours after the archive part and up to the current hour
+    # (the forecast response also contains the rest of today's future hours).
+    last_archive_time = archive_df["event_time"].max()
+    current_hour_str = current_hour.strftime("%Y-%m-%dT%H:%M")
+    recent_df = recent_df[
+        (recent_df["event_time"] > last_archive_time)
+        & (recent_df["event_time"] <= current_hour_str)
+    ]
+
+    city_df = (
+        pd.concat([archive_df, recent_df], ignore_index=True)
+        .drop_duplicates(subset="event_time", keep="first")
+        .sort_values("event_time")
+    )
     city_df["city"] = city
     city_df["source"] = "historical"
     return city_df
@@ -55,7 +114,7 @@ if __name__ == "__main__":
     failed_cities = []
 
     for city, (lat, lon) in AT_RISK_LOCATIONS.items():
-        logger.info(f"Fetching historical data for {city} ({START_DATE} to {END_DATE})...")
+        logger.info(f"Fetching historical data for {city} (last {HISTORY_YEARS} years -> now)...")
         try:
             city_df = fetch_historical_for_city(city, lat, lon)
             columns = ["city", "event_time"] + HOURLY_VARIABLES + ["source"]

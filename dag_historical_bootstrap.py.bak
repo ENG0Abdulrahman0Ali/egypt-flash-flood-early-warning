@@ -1,0 +1,72 @@
+"""
+dag_historical_bootstrap.py
+Owner: Mohamed Tarek
+
+ONE-TIME DAG (schedule="@once"): يشتغل مرة واحدة بس أول ما Airflow يشوفه،
+ويجهّز المشروع من الصفر:
+
+  1) setup_db                 -> ينشئ FloodProjectDB + جداول Bronze/Silver/Gold
+  2) fetch_static_data        -> gold.dim_location
+  3) fetch_historical         -> bronze.historical_weather
+  4) historical_bootstrap_job -> Spark: Bronze (historical) -> Silver (Full Load)
+
+لو عايز تشغله يدوي بدل التلقائي غيّر schedule إلى None، أو من الـ UI:
+    airflow dags trigger historical_bootstrap
+"""
+
+import os
+from datetime import datetime, timedelta
+
+from airflow.decorators import dag, task
+
+PROJECT_DIR = os.environ.get("PROJECT_DIR", "/opt/airflow/project")
+PYTHON = "/opt/uv-venv/bin/python"
+
+default_args = {
+    "owner": "mohamed_tarek",
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+
+@dag(
+    dag_id="historical_bootstrap",
+    description="One-time: DB/tables -> dim_location -> bronze historical -> silver (Spark)",
+    schedule="@once",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+    is_paused_upon_creation=False,
+    default_args=default_args,
+    tags=["flood-warning", "warehouse", "ingestion", "spark", "one-time"],
+)
+def historical_bootstrap():
+
+    @task.bash
+    def setup_db() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} warehouse/setup_db.py"
+
+    @task.bash
+    def fetch_static_data() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/fetch_static_data.py"
+
+    @task.bash(
+        execution_timeout=timedelta(hours=3),
+        retries=2,
+        retry_delay=timedelta(minutes=10),
+    )
+    def fetch_historical() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} ingestion/fetch_historical.py"
+
+    @task.bash(
+        execution_timeout=timedelta(hours=2),
+        retries=1,
+        retry_delay=timedelta(minutes=5),
+    )
+    def historical_bootstrap_job() -> str:
+        return f"cd {PROJECT_DIR} && {PYTHON} spark/historical_bootstrap_job.py"
+
+    setup_db() >> fetch_static_data() >> fetch_historical() >> historical_bootstrap_job()
+
+
+historical_bootstrap()
