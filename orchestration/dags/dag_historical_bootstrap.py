@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 
+import pendulum
 from airflow.decorators import dag, task
 
 PROJECT_DIR = os.environ.get("PROJECT_DIR", "/opt/airflow/project")
@@ -17,7 +18,7 @@ default_args = {
     dag_id="historical_bootstrap",
     description="One-time: DB/tables -> dim_location -> bronze historical -> silver (Spark)",
     schedule="@once",
-    start_date=datetime(2026, 1, 1),
+    start_date=pendulum.datetime(2026, 1, 1, tz="Africa/Cairo"),
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=False,
