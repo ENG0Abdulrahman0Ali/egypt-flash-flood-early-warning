@@ -1,20 +1,3 @@
-"""
-dag_hourly_ingestion.py
-Owner: Mohamed Tarek
-
-يشتغل كل ساعة، بالترتيب:
-
-  1) ensure_topic              -> يتأكد إن Kafka topic موجود
-  2) producer_live             -> ينشر قراءة الساعة الحالية لكل مدينة على Kafka
-  3) kafka_to_bronze_consumer  -> يكتبها في bronze.live_weather
-  4) live_incremental_job      -> Spark: Bronze (live) -> Silver (Append)
-  5) silver_to_gold_load       -> Spark: Silver -> gold.fact_hourly_risk
-
-الاسم `hourly_ingestion` والـ task_ids الثلاثة الأولى زي ما كانوا.
-لازم historical_bootstrap يكون خلص الأول (silver_to_gold محتاج صفوف historical
-عشان يحسب الـ thresholds).
-"""
-
 import os
 from datetime import datetime, timedelta
 
@@ -36,7 +19,7 @@ default_args = {
     schedule="@hourly",
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    max_active_runs=1,  # ما نسمحش بتداخل تشغيلين Spark على نفس الجداول
+    max_active_runs=1,
     is_paused_upon_creation=False,
     default_args=default_args,
     tags=["flood-warning", "ingestion", "spark", "hourly"],
